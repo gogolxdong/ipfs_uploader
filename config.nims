@@ -1,3 +1,5 @@
 --define:release
 --hints:off
 --warnings:off
+--stacktrace:on
+--linetrace:on
