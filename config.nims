@@ -3,3 +3,4 @@
 --warnings:off
 --stacktrace:on
 --linetrace:on
+--stacktraceMsgs:on

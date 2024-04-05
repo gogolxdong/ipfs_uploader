@@ -3,3 +3,4 @@ main
 ipfs
 claude
 *.sql
+env*
