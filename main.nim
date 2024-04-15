@@ -42,13 +42,13 @@ router.api(MethodPost, "/omnimuse/eth_signData") do (contentBody: Option[Content
                 "signData": signData
             }
         }
-        discard RestApiResponse.response($response, Http200, "application/json",headers=headers)
+        RestApiResponse.response($response, Http200, "application/json",headers=headers)
     except Exception as e:
         var response = %*{
             "code": 500,
             "message": e.msg
         }
-        discard RestApiResponse.response($response, Http500, "application/json",headers=headers)
+        RestApiResponse.response($response, Http500, "application/json",headers=headers)
 
 
 router.api(MethodPost, "/omnimuse/eth_signIn") do (contentBody: Option[ContentBody]) -> RestApiResponse:
@@ -57,7 +57,7 @@ router.api(MethodPost, "/omnimuse/eth_signIn") do (contentBody: Option[ContentBo
     var headers = HttpTable.init([("Access-Control-Allow-Origin", "*")])
     try:
         body = contentBody.get().data.bytesToString.parseJson
-        echo body
+        # echo body
         var address = body["address"].getStr
         var signData = body["signData"].getStr
         var signature = body["signature"].getStr
@@ -73,7 +73,7 @@ router.api(MethodPost, "/omnimuse/eth_signIn") do (contentBody: Option[ContentBo
         var requestId: int
         var resources: string
 
-        echo "signature:", signature
+        # echo "signature:", signature
         # var sig = Signature.fromHex(signature).get
         # var msgHash = keccakHash(signData)
         # var publicKey = keys.recover(sig, signData.toOpenArrayByte(signData.low, signData.high)).get
@@ -92,7 +92,6 @@ router.api(MethodPost, "/omnimuse/eth_signIn") do (contentBody: Option[ContentBo
             })
 
             token.sign(secret)
-
             var response = %* {
                 "code": 200,
                 "message": "success",
@@ -104,12 +103,11 @@ router.api(MethodPost, "/omnimuse/eth_signIn") do (contentBody: Option[ContentBo
             var dbUser = getEnv("DBUSER")
             var dbPassword = getEnv("DBPASSWORD")
             var dbName = getEnv("DBNAME")
-            echo &"{dbUser} {dbPassword} {dbName}"
             var db = open("127.0.0.1:3306", dbUser,dbPassword,dbName)
             defer: db.close()
             if not db.setEncoding("utf8"):
                 return
-            db.exec(sql"INSERT INTO user (address, token, create_time) VALUES (?,?,?) ON DUPLICATE KEY UPDATE token=?", address, token, now().toTime, token)
+            db.exec(sql"INSERT INTO user (address, token, create_time) VALUES (?,?,?) ON DUPLICATE KEY UPDATE token=?", address, token, now().toTime.toUnix, token)
             RestApiResponse.response($response, Http200, "application/json", headers=headers)
         else:
             var response = %* {
@@ -118,8 +116,11 @@ router.api(MethodPost, "/omnimuse/eth_signIn") do (contentBody: Option[ContentBo
             }
             RestApiResponse.response($response, Http200, "application/json", headers=headers)
     except Exception as e:
-        echo e.name
-        RestApiResponse.response(e.msg, Http500, "text/plain",headers=headers)
+        var response = %* {
+                "code": 500,
+                "message": e.msg,
+            }
+        RestApiResponse.response(e.msg, Http500, "application/json",headers=headers)
 
 router.api(MethodPost, "/omnimuse/upload") do (contentBody: Option[ContentBody]) -> RestApiResponse:
   {.gcsafe.}:   
@@ -139,20 +140,18 @@ router.api(MethodPost, "/omnimuse/upload") do (contentBody: Option[ContentBody])
             var secret = "secret"
             if jwtToken.verify(secret, HS256):
                 var cid = body["path"].getStr
-       
+                var fileName = body["file_name"].getStr
                 load()
                 var dbUser = getEnv("DBUSER")
                 var dbPassword = getEnv("DBPASSWORD")
                 var dbName = getEnv("DBNAME")
-                echo &"{dbUser} {dbPassword} {dbName}"
                 var db = open("127.0.0.1:3306", dbUser,dbPassword,dbName)
                 defer: db.close()
                 if not db.setEncoding("utf8"):
                     return
                 var address = db.getValue(sql"select address from user where token=?", token)
-                echo &"token: {token} address: {address}"
                 if address != "":
-                    db.exec(sql"INSERT INTO record (address, cid, create_time) values (?,?,?) ON DUPLICATE KEY UPDATE update_time=?", address, cid, now().toTime, now().toTime)
+                    db.exec(sql"INSERT INTO record (address, cid, create_time, file_name) values (?,?,?,?) ON DUPLICATE KEY UPDATE update_time=?", address, cid, now().toTime.toUnix, fileName, now().toTime.toUnix)
                     RestApiResponse.response($response, Http200, "application/json",headers=headers)
                 else:
                     response["message"] = %"invalid address"
@@ -174,12 +173,14 @@ router.api(MethodPost, "/omnimuse/upload") do (contentBody: Option[ContentBody])
 router.api(MethodPost, "/omnimuse/records") do (contentBody: Option[ContentBody]) -> RestApiResponse:
   {.gcsafe.}:
     var headers = HttpTable.init([("Access-Control-Allow-Origin", "*")])
-    # var body: JsonNode
+    var body = newJObject()
     try:
-        # body = contentBody.get().data.bytesToString.parseJson
+        if contentBody.isSome:
+            body = contentBody.get().data.bytesToString.parseJson
         if request.headers.contains("Authorization"):
+            var page = if body.hasKey"page": body["page"].getInt else:0
+            var pageSize = if body.hasKey"pageSize": body["pageSize"].getInt else:0
             var token = request.headers.getString("Authorization")[7..^1]
-            echo "token:",token
             load()
             var dbUser = getEnv("DBUSER")
             var dbPassword = getEnv("DBPASSWORD")
@@ -188,17 +189,26 @@ router.api(MethodPost, "/omnimuse/records") do (contentBody: Option[ContentBody]
             defer: db.close()
             if not db.setEncoding("utf8"):
                 return
-            var address = db.getValue(sql"select address from user where token=?", token)
-            echo "address:", address
-            var rows = db.getAllRows(sql"select address,cid,create_time from record where address=?", address)
-            echo "rows:", rows
             var response = %* {
                 "code": 200,
                 "message": "success",
                 "result": []
             }
+            if page < 1:
+                response["message"] = %"invalid page"
+                result = RestApiResponse.response($response, Http200, "application/json",headers=headers)
+                return
+            var address = db.getValue(sql"select address from user where token=?", token)
+            var limit = if pageSize != 0 : &" limit {(page-1)*pageSize}, {page*pageSize}" else: ""
+            var count = db.getValue(sql"select count(*) from record where address=? ORDER BY create_time DESC", address)
+            var selectRecordDesc = "select address,cid,create_time, file_name from record where address=? ORDER BY create_time DESC"
+            var statement = selectRecordDesc & limit
+            echo "statement:", statement
+            var rows = db.getAllRows(sql statement, address) 
+     
+            response["total"] = %count
             for row in rows:
-                response["result"].add %*{"address": row[0], "cid":  row[1], "create_time": row[2]}
+                response["result"].add %*{"address": row[0], "cid":  row[1], "create_time": row[2], "file_name": row[3]}
             RestApiResponse.response($response, Http200, "application/json",headers=headers)
         else:
             var response = %* {
