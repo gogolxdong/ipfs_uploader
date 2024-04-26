@@ -132,7 +132,7 @@ router.api(MethodPost, "/omnimuse/upload") do (contentBody: Option[ContentBody])
     }
     try:
         body = contentBody.get().data.bytesToString.parseJson
-        echo body
+        echo "upload:", body
 
         if request.headers.contains("Authorization"):
             var token = request.headers.getString("Authorization")[7..^1]
@@ -216,6 +216,32 @@ router.api(MethodPost, "/omnimuse/records") do (contentBody: Option[ContentBody]
                 "message": "invalid Authorization"
             }
             RestApiResponse.response($response, Http200, "application/json",headers=headers)
+    except Exception as e:
+        var response = %* {
+                "code": 200,
+                "message": "invalid Authorization"
+            }
+        var strace: string = e.msg & "\n"
+        for t in e.trace:
+            strace.add &"{t.filename} {t.line} {t.procname} {t.frameMsg}\n"
+        response["message"] = %strace
+        RestApiResponse.response($response, Http500, "application/json",headers=headers)
+
+router.api(MethodGet, "/count") do (contentBody: Option[ContentBody]) -> RestApiResponse:
+  {.gcsafe.}:
+    var headers = HttpTable.init([("Access-Control-Allow-Origin", "*")])
+    try:
+        load()
+        var dbUser = getEnv("DBUSER")
+        var dbPassword = getEnv("DBPASSWORD")
+        var dbName = getEnv("DBNAME")
+        var db = open("127.0.0.1:3306", dbUser,dbPassword,dbName)
+        defer: db.close()
+        if not db.setEncoding("utf8"):
+            return
+
+        var count = db.getValue(sql"select count(*) from record")
+        RestApiResponse.response($count, Http200, "text/plain",headers=headers)
     except Exception as e:
         var response = %* {
                 "code": 200,
