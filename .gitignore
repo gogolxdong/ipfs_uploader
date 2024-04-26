@@ -4,3 +4,4 @@ ipfs
 claude
 *.sql
 env*
+test*
